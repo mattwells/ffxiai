@@ -1,0 +1,56 @@
+{
+  "manifest_version": "0.3",
+  "name": "ffxiai",
+  "display_name": "FFXI-AI",
+  "version": "0.2.0",
+  "description": "Let Claude see your Final Fantasy XI characters: gear, inventory, party, merits, currencies and more. Needs the FFXI-AI Windower addon.",
+  "long_description": "Connects Claude to the **FFXI-AI** addon for Windower, so you can ask things like *\"What augments are on my cape?\"*, *\"Which of my rings have Store TP?\"* or *\"How many Sparks do I have?\"*.\n\n**Read-only.** Claude can look, never act: it can't move, fight, trade or send anything in game. Chat reading is off until you turn it on in game (`//ffxiai chat on`).\n\n**Before you start:** install the FFXI-AI addon in Windower and load it on every character (`//lua load ffxiai`). This extension only connects Claude to it.\n\nWorks with several characters at once: ask about one by name, or all of them.",
+  "author": {
+    "name": "Andro",
+    "url": "https://github.com/mattwells"
+  },
+  "license": "MIT",
+  "keywords": ["ffxi", "final fantasy xi", "windower", "game"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "FFXIAI_PORT": "${user_config.port}"
+      }
+    }
+  },
+  "user_config": {
+    "port": {
+      "type": "number",
+      "title": "Port",
+      "description": "Only change this if you changed the port in the addon's data/settings.xml. Both must match.",
+      "default": 19750,
+      "min": 1024,
+      "max": 65535,
+      "required": false
+    }
+  },
+  "tools": [
+    {"name": "list_characters", "description": "Every character running FFXI-AI: job, zone, status, HP/MP and TP"},
+    {"name": "get_player", "description": "Jobs and levels, HP/MP/TP, status, buffs and debuffs"},
+    {"name": "get_target", "description": "Target, sub-target, battle target and pet"},
+    {"name": "get_party", "description": "Party and alliance members' HP/MP/TP, zone and leader"},
+    {"name": "get_inventory", "description": "Items in any bag, with augments, plus gil; searchable"},
+    {"name": "get_equipment", "description": "What's equipped in each slot, with augments, path and rank"},
+    {"name": "get_recasts", "description": "Abilities and spells on cooldown"},
+    {"name": "get_location", "description": "Zone, position, weather, Vana'diel time and moon"},
+    {"name": "get_chat", "description": "Recent chat, if you turned chat reading on in game"},
+    {"name": "get_merits", "description": "Merit points, merits spent, and job points per job"},
+    {"name": "get_currencies", "description": "Sparks, Bayld, seals, beads and everything else on the Currencies pages"},
+    {"name": "lookup", "description": "Game data from Windower: item stats, spells, abilities, weapon skills and more"}
+  ],
+  "compatibility": {
+    "platforms": ["win32"],
+    "runtimes": {
+      "node": ">=16.0.0"
+    }
+  }
+}
