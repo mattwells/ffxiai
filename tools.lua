@@ -98,9 +98,10 @@ function tools.get_player()
     if not player then return nil, err end
     local v = player.vitals or {}
     local buffs = json.array()
+    local timers = tools.buff_timers()
     for _, id in ipairs(player.buffs or {}) do
         if id ~= 255 then
-            buffs[#buffs + 1] = en(res.buffs, id) or ('buff ' .. id)
+            buffs[#buffs + 1] = {name = en(res.buffs, id) or ('buff ' .. id), seconds_left = timers(id)}
         end
     end
     local levels = json.object()
@@ -669,15 +670,58 @@ local function fields_of(p)
 end
 
 -- The game data FFXI-AI reads from packets, by the names players know, in the order //ffxiai shows them.
-tools.DATA_KINDS = {'Merit points', 'Job points', 'Currencies', 'Currencies 2'}
+tools.DATA_KINDS = {'Character stats', 'Skills', 'Buff timers', 'Merit points', 'Job points', 'Currencies', 'Currencies 2'}
 
 local function kind_of(id, data)
+    if id == 0x061 then return 'Character stats' end
+    if id == 0x062 then return 'Skills' end
     if id == 0x113 then return 'Currencies' end
     if id == 0x118 then return 'Currencies 2' end
     if id == 0x063 and type(data) == 'string' then
         local t = data:byte(5)
         if t == 0x02 then return 'Merit points' end
         if t == 0x05 then return 'Job points' end
+        if t == 0x09 then return 'Buff timers' end
+    end
+end
+
+-- Little-endian unsigned 32-bit number at a 1-based byte position.
+local function u32(data, pos)
+    local a, b, c, d = data:byte(pos, pos + 3)
+    if not d then return nil end
+    return a + b * 0x100 + c * 0x10000 + d * 0x1000000
+end
+
+-- Buff timers in 0x063 type 9 count in 1/60 s of the game's own clock. The player update packet (0x037)
+-- carries that clock, which gives the offset to real time (the same way GearSwap does it).
+local game_clock_offset
+
+local function note_game_clock(data)
+    local a, b = u32(data, 0x41), u32(data, 0x3D)
+    if a and b then
+        game_clock_offset = os.time() - ((a * 60 - b) % 0x100000000) / 60
+    end
+end
+
+-- Treasure pool, from the drop (0x0D2) and lot (0x0D3) packets: pool slot -> what we know about it.
+local treasure = {}
+
+local function note_treasure(id, p)
+    local slot = p['Index']
+    if slot == nil then return end
+    if id == 0x0D2 then
+        treasure[slot] = {item = p['Item'], dropped = clock(), old = p['Old'] and true or false}
+    else
+        local t = treasure[slot] or {}
+        treasure[slot] = t
+        if p['Drop'] and p['Drop'] ~= 0 then
+            treasure[slot] = nil
+            return
+        end
+        local lot = p['Highest Lot']
+        if lot and lot > 0 and lot ~= 0xFFFF then
+            t.highest_lot, t.highest_lotter = lot, p['Highest Lotter Name']
+        end
     end
 end
 
@@ -691,6 +735,24 @@ end
 
 -- Called with every incoming packet (and with Windower's last copies at load, with source set).
 function tools.record_packet(id, data, source)
+    if id == 0x037 then
+        if type(data) == 'string' then note_game_clock(data) end
+        return
+    end
+    -- Puppetmaster's job packet (0x044 for job 18, main job only): the automaton's name, HP/MP, skills and stats.
+    if id == 0x044 then
+        if packets_ok and type(data) == 'string' and data:byte(5) == 18 and data:byte(6) == 0 then
+            local ok, p = pcall(packets.parse, 'incoming', data)
+            if ok and type(p) == 'table' then seen.automaton = {time = source and KEPT or clock(), packet = p} end
+        end
+        return
+    end
+    if (id == 0x0D2 or id == 0x0D3) and not source then
+        if not packets_ok then return end
+        local ok, p = pcall(packets.parse, 'incoming', data)
+        if ok and type(p) == 'table' then note_treasure(id, p) end
+        return
+    end
     local kind = kind_of(id, data)
     if not kind then return end
     -- A copy Windower kept from before this load has no known arrival time: KEPT marks it, so it
@@ -708,7 +770,22 @@ function tools.record_packet(id, data, source)
             seen.points = {time = t, fields = fields_of(p)}
         elseif kind == 0x05 then
             seen.capacity = {time = t, packet = p}
+        elseif kind == 0x09 then
+            -- 32 buff slots: ids at 0x09, timers at 0x49 (1-based), as GearSwap reads them.
+            local list = {}
+            for i = 1, 32 do
+                local lo, hi = data:byte(i * 2 + 7, i * 2 + 8)
+                local buff = lo and hi and lo + hi * 0x100
+                if buff and buff ~= 0 and buff ~= 255 then
+                    list[#list + 1] = {id = buff, raw = u32(data, i * 4 + 0x45)}
+                end
+            end
+            seen.buffs = {time = t, list = list}
         end
+        return
+    end
+    if id == 0x061 or id == 0x062 then
+        seen[id] = {time = t, packet = p}
         return
     end
     seen[id] = {time = t, fields = fields_of(p)}
@@ -726,7 +803,7 @@ end
 function tools.seed_packets()
     local last = windower.packets and windower.packets.last_incoming
     if not last then return end
-    for _, id in ipairs({0x063, 0x113, 0x118}) do
+    for _, id in ipairs({0x037, 0x044, 0x061, 0x062, 0x063, 0x113, 0x118}) do
         local ok, data = pcall(last, id)
         if ok and data then
             tools.record_packet(id, data, 'kept by Windower')
@@ -838,6 +915,249 @@ function tools.get_merits(args)
     out.note = 'Merit and limit points update whenever the game sends them (gaining points, zoning). '
         .. 'Job point categories are levels (0 to 20).'
     return out
+end
+
+-- Returns a function giving seconds left on the next buff with that id (in player.buffs order), or nil
+-- when the game hasn't sent a timer for it.
+function tools.buff_timers()
+    local list = seen.buffs and seen.buffs.list or {}
+    local used = {}
+    return function(id)
+        for i, b in ipairs(list) do
+            if not used[i] and b.id == id then
+                used[i] = true
+                if not (game_clock_offset and b.raw) then return nil end
+                local left = b.raw / 60 + game_clock_offset - os.time()
+                -- Buffs without a real timer come out far in the future or in the past.
+                return left > 0 and left < 86400 and math.floor(left) or nil
+            end
+        end
+    end
+end
+
+local function not_seen(what)
+    return {not_seen_yet = 'The game sends ' .. what .. ' when you log in or zone, and when it changes; '
+        .. 'it shows up here after that.', packets_seen = tools.packets_summary()}
+end
+
+function tools.get_skills()
+    local player, err = player_or_err()
+    if not player then return nil, err end
+    local s = seen[0x062]
+    -- Automaton skills aren't in the skills packet; get_job_setup has them.
+    local groups = {Combat = 'combat', Magic = 'magic', Synthesis = 'crafting'}
+    local out = {}
+    for _, key in pairs(groups) do out[key] = json.object() end
+    for id = 1, 63 do
+        local r = res.skills[id]
+        local key = type(r) == 'table' and groups[rawget(r, 'category')]
+        if key then
+            local entry
+            if s then
+                local p = s.packet
+                local level = p[r.en .. ' Level']
+                if type(level) == 'number' and level > 0 then
+                    entry = {level = level, capped = p[r.en .. ' Capped'] and true or false}
+                    local rank = p[r.en .. ' Rank']
+                    if key == 'crafting' and type(rank) == 'number' then
+                        entry.rank = en(res.synth_ranks, rank)
+                    end
+                end
+            else
+                -- Without the packet, Windower's player data still has the levels.
+                local level = (player.skills or {})[r.en:lower():gsub('[%s%-]', '_')]
+                if type(level) == 'number' and level > 0 then
+                    entry = {level = level}
+                end
+            end
+            out[key][r.en] = entry
+        end
+    end
+    out.as_of = s and age_text(s.time) or nil
+    out.note = 'Combat and magic skills are for the current jobs; "capped" means at the cap for the current level.'
+        .. (s and '' or ' Caps and craft ranks show up once the game sends the skills packet (on login or zoning).')
+    return out
+end
+
+function tools.get_stats()
+    local player, err = player_or_err()
+    if not player then return nil, err end
+    local s = seen[0x061]
+    if not s then return not_seen('character stats') end
+    local p = s.packet
+    local stats = json.object()
+    for _, k in ipairs({'STR', 'DEX', 'VIT', 'AGI', 'INT', 'MND', 'CHR'}) do
+        local base, added = p['Base ' .. k] or 0, p['Added ' .. k] or 0
+        stats[k] = {base = base, added = added, total = base + added}
+    end
+    local resist = json.object()
+    for _, e in ipairs({'Fire', 'Ice', 'Wind', 'Earth', 'Lightning', 'Water', 'Light', 'Dark'}) do
+        resist[e] = p[e .. ' Resistance']
+    end
+    local out = {
+        stats = stats,
+        attack = p['Attack'], defense = p['Defense'],
+        elemental_resistance = resist,
+        -- At 99 the game keeps sending a full EXP bar that means nothing; limit points are in get_merits.
+        exp = (player.main_job_level or 0) < 99 and {current = p['Current EXP'], to_next_level = p['Required EXP']} or nil,
+        master_level = p['Master Level'],
+        master_breaker = p['Master Breaker'] and true or false,
+        exemplar_points = {current = p['Current Exemplar Points'], to_next_level = p['Required Exemplar Points']},
+        title = en(res.titles, p['Title']),
+        nation_rank = p['Nation rank'],
+        rank_points = p['Rank points'],
+        home_point = en(res.zones, p['Home point']),
+        unity = {rank = p['Unity Rank'], points = p['Unity Points']},
+        as_of = age_text(s.time),
+        note = 'Attack, defense and stats are as the game last sent them, with current gear and buffs. '
+            .. 'Limit and merit points are in get_merits.',
+    }
+    return out
+end
+
+-- Automaton parts are items in Windower's resources, at their id or 0x2000 above it.
+local function automaton_part(id)
+    if type(id) ~= 'number' or id == 0 then return nil end
+    for _, i in ipairs({id, id + 0x2000}) do
+        local r = res.items[i]
+        if r and r.category == 'Automaton' then return r.en end
+    end
+    return 'part ' .. id
+end
+
+local function job_setup(job_id, data, is_main)
+    if type(data) ~= 'table' then return nil end
+    if job_id == 16 then
+        local spells = json.array()
+        for _, id in pairs(data.spells or {}) do
+            local name = type(id) == 'number' and id > 0 and en(res.spells, id)
+            if name then spells[#spells + 1] = name end
+        end
+        table.sort(spells)
+        return {blue_magic_set = spells}
+    elseif job_id == 18 then
+        local parts = json.array()
+        for _, id in pairs(data.attachments or {}) do
+            local name = automaton_part(id)
+            if name then parts[#parts + 1] = name end
+        end
+        table.sort(parts)
+        local out = {head = automaton_part(data.head), frame = automaton_part(data.frame), attachments = parts}
+        local a = seen.automaton
+        if not is_main then
+            -- Only main job Puppetmaster gets the automaton details.
+        elseif a then
+            local p = a.packet
+            local name = type(p['Pet Name']) == 'string' and p['Pet Name']:gsub('%z.*', '') or ''
+            local skill = function(k)
+                return {level = p['Current ' .. k .. ' Skill'], max = p['Max ' .. k .. ' Skill']}
+            end
+            local stats = json.object()
+            for _, k in ipairs({'STR', 'DEX', 'VIT', 'AGI', 'INT', 'MND', 'CHR'}) do
+                local base, added = p['Base ' .. k] or 0, p['Additional ' .. k] or 0
+                stats[k] = {base = base, added = added, total = base + added}
+            end
+            out.automaton = {
+                name = name ~= '' and name or nil,
+                hp = p['Current HP'], max_hp = p['Max HP'], mp = p['Current MP'], max_mp = p['Max MP'],
+                skills = {melee = skill('Melee'), ranged = skill('Ranged'), magic = skill('Magic')},
+                stats = stats,
+                as_of = age_text(a.time),
+            }
+        else
+            out.automaton = {not_seen_yet = 'The game sends the automaton\'s name, skills and stats when you zone, '
+                .. 'change job or use a maneuver; they show up here after that.'}
+        end
+        return out
+    elseif job_id == 23 then
+        return {species = en(res.monstrosity, data.species)}
+    end
+end
+
+function tools.get_job_setup()
+    local player, err = player_or_err()
+    if not player then return nil, err end
+    local f = windower.ffxi
+    local out = {
+        main_job = player.main_job,
+        main = job_setup(player.main_job_id, f.get_mjob_data and f.get_mjob_data(), true) or json.null,
+    }
+    if player.sub_job_id and f.get_sjob_data then
+        out.sub_job = player.sub_job
+        out.sub = job_setup(player.sub_job_id, f.get_sjob_data()) or json.null
+    end
+    out.note = 'Only Blue Mage (spells set), Puppetmaster (automaton) and Monstrosity have a setup to show.'
+    return out
+end
+
+local POOL_SECONDS = 300
+
+function tools.get_treasure_pool()
+    local _, err = player_or_err()
+    if _ == nil then return nil, err end
+    local items = windower.ffxi.get_items() or {}
+    local pool = json.array()
+    local now = clock()
+    local present = {}
+    for slot, it in pairs(items.treasure or {}) do
+        local id = type(it) == 'table' and (it.item_id or it.id)
+        if id and id ~= 0 then
+            present[slot] = true
+            local entry = {name = en(res.items, id) or ('item ' .. id)}
+            local t = treasure[slot]
+            if t and t.item == id then
+                if t.dropped and not t.old then
+                    entry.seconds_left = math.max(0, POOL_SECONDS - math.floor(os.difftime(now, t.dropped)))
+                end
+                entry.highest_lot = t.highest_lot
+                entry.highest_lotter = t.highest_lotter
+            end
+            pool[#pool + 1] = entry
+        end
+    end
+    for slot in pairs(treasure) do
+        if not present[slot] then treasure[slot] = nil end
+    end
+    return {
+        items = pool,
+        note = 'Time left and lots are only known for drops seen while FFXI-AI was loaded. Items stay in the pool '
+            .. 'for about 5 minutes.',
+    }
+end
+
+local NEARBY_KINDS = {monster = true, player = true, npc = true, all = true}
+
+function tools.get_nearby(args)
+    local _, err = player_or_err()
+    if _ == nil then return nil, err end
+    local kind = type(args.kind) == 'string' and args.kind:lower() or 'monster'
+    if not NEARBY_KINDS[kind] then
+        return nil, 'unknown kind "' .. tostring(args.kind) .. '" (monster, player, npc or all)'
+    end
+    local search = type(args.name) == 'string' and args.name ~= '' and args.name:lower() or nil
+    local max_distance = tonumber(args.max_distance) or 50
+    local limit = math.max(1, math.min(100, math.floor(tonumber(args.limit) or 20)))
+    local me = windower.ffxi.get_mob_by_target('me')
+    local found = {}
+    for _, m in pairs(windower.ffxi.get_mob_array() or {}) do
+        if type(m) == 'table' and m.valid_target and m.name and m.name ~= '' and m.distance
+                and not (me and m.id == me.id)
+                and (kind == 'all' or mob_kind(m) == kind)
+                and (not search or m.name:lower():find(search, 1, true))
+                and math.sqrt(m.distance) <= max_distance then
+            found[#found + 1] = m
+        end
+    end
+    table.sort(found, function(a, b) return a.distance < b.distance end)
+    local list = json.array()
+    for i = 1, math.min(limit, #found) do
+        list[i] = describe_mob(found[i])
+    end
+    return {
+        found = #found,
+        shown = list,
+        note = #found > limit and ('Showing the nearest ' .. limit .. '; raise "limit" or narrow it down to see more.') or nil,
+    }
 end
 
 local CURRENCY_PAGES = {[0x113] = 'Currencies', [0x118] = 'Currencies 2'}
@@ -1058,6 +1378,11 @@ local handlers = {
     lookup = tools.lookup,
     get_merits = tools.get_merits,
     get_currencies = tools.get_currencies,
+    get_skills = tools.get_skills,
+    get_stats = tools.get_stats,
+    get_job_setup = tools.get_job_setup,
+    get_treasure_pool = tools.get_treasure_pool,
+    get_nearby = tools.get_nearby,
 }
 
 function tools.run(name, args)

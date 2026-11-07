@@ -20,7 +20,7 @@ The port is in data/settings.xml (global section); every character must use the 
 
 _addon.name = 'FFXI-AI'
 _addon.author = 'Andro'
-_addon.version = '0.2.0'
+_addon.version = '0.3.0'
 _addon.commands = {'ffxiai'}
 
 local config = require('config')

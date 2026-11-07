@@ -45,7 +45,8 @@ local TOOLS = {
     {
         name = 'get_player',
         title = 'Player status',
-        description = 'Character status: jobs and levels, HP/MP/TP, idle/engaged/resting/dead, active buffs and debuffs, every job\'s level.',
+        description = 'Character status: jobs and levels, HP/MP/TP, idle/engaged/resting/dead, active buffs and debuffs '
+            .. '(with seconds left when the game sent a timer), every job\'s level.',
         inputSchema = schema(),
     },
     {
@@ -121,6 +122,48 @@ local TOOLS = {
             .. 'player can run //ffxiai requests on in game to let FFXI-AI ask for current values.',
         inputSchema = schema({
             search = {type = 'string', description = 'Only currencies whose name contains this text (case-insensitive).'},
+        }),
+    },
+    {
+        name = 'get_skills',
+        title = 'Skills',
+        description = 'Combat and magic skill levels for the current jobs, and crafting levels and ranks '
+            .. '(Fishing, Woodworking, Smithing and so on), with whether each is capped.',
+        inputSchema = schema(),
+    },
+    {
+        name = 'get_stats',
+        title = 'Character stats',
+        description = 'STR, DEX, VIT, AGI, INT, MND and CHR (base, from gear and buffs, and total), attack, defense, '
+            .. 'elemental resistances, EXP to the next level, Master Level and exemplar points, title, nation rank, '
+            .. 'home point and Unity rank and points.',
+        inputSchema = schema(),
+    },
+    {
+        name = 'get_job_setup',
+        title = 'Job setup',
+        description = 'Job-specific setup for the main and sub job: blue magic set (Blue Mage); automaton head, frame '
+            .. 'and attachments, plus (on main job Puppetmaster) its name, HP/MP, melee/ranged/magic skill and stats; '
+            .. 'or species (Monstrosity). Other jobs have nothing to show.',
+        inputSchema = schema(),
+    },
+    {
+        name = 'get_treasure_pool',
+        title = 'Treasure pool',
+        description = 'Items in the treasure pool, with seconds left and the highest lot and who made it, for drops seen '
+            .. 'while FFXI-AI was loaded.',
+        inputSchema = schema(),
+    },
+    {
+        name = 'get_nearby',
+        title = 'Nearby',
+        description = 'Monsters, players or NPCs the game client can currently see, nearest first: name, HP percent, '
+            .. 'distance, status and who has claim.',
+        inputSchema = schema({
+            kind = {type = 'string', enum = {'monster', 'player', 'npc', 'all'}, description = 'What to list (default monster).'},
+            name = {type = 'string', description = 'Only names containing this text (case-insensitive).'},
+            max_distance = {type = 'number', description = 'Only within this many yalms (default 50).'},
+            limit = {type = 'integer', description = 'Most results to return (default 20, max 100).'},
         }),
     },
     {

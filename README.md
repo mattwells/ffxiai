@@ -47,7 +47,7 @@ Add an MCP server with the address `http://127.0.0.1:19750/mcp`. Apps call this 
 | Tool | What it reads |
 |---|---|
 | `list_characters` | Every character running the addon: job, zone, status, HP/MP, TP |
-| `get_player` | Jobs and levels, HP/MP/TP, status, buffs and debuffs, every job's level |
+| `get_player` | Jobs and levels, HP/MP/TP, status, buffs and debuffs with time left, every job's level |
 | `get_target` | Target, sub-target, battle target and pet: HP %, distance, who has claim |
 | `get_party` | Party and alliance: HP/MP, TP, zone, distance, leader |
 | `get_inventory` | A bag's items, counts and augments, plus gil. Can search every bag, optionally by whole word |
@@ -56,6 +56,11 @@ Add an MCP server with the address `http://127.0.0.1:19750/mcp`. Apps call this 
 | `get_location` | Zone, position, weather, Vana'diel time and day, moon, server |
 | `get_merits` | Merit points and limit points, merits spent, and per job: capacity points, job points and categories |
 | `get_currencies` | Both Currencies pages (Sparks, Bayld, seals, beads, Gallimaufry and so on), with how old they are |
+| `get_skills` | Combat and magic skills, and crafting levels and ranks, with whether each is capped |
+| `get_stats` | STR, DEX and the rest (base and from gear), attack, defense, resistances, EXP, Master Level, title, nation rank, Unity |
+| `get_job_setup` | Blue magic set; automaton head, frame, attachments, skills and stats; or Monstrosity species |
+| `get_treasure_pool` | What's in the treasure pool, how long is left and the highest lot |
+| `get_nearby` | Monsters, players or NPCs nearby, nearest first, with HP, distance and who has claim |
 | `lookup` | Game data from Windower's resources: item stats, spells, abilities, weapon skills, buffs, key items, job traits, zones. Can search item descriptions and limit results to what a character has |
 | `get_chat` | Recent chat, only if you [turn it on](#chat) |
 
