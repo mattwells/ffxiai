@@ -20,7 +20,7 @@ The port is in data/settings.xml (global section); every character must use the 
 
 _addon.name = 'FFXI-AI'
 _addon.author = 'Andro'
-_addon.version = '0.5.0'
+_addon.version = '0.5.1'
 _addon.commands = {'ffxiai'}
 
 local config = require('config')
@@ -96,7 +96,8 @@ windower.register_event('prerender', function()
         return
     end
     local t = os.clock()
-    if t >= next_name_check then
+    -- Login and logout keep the name up to date; this only fills it in if it isn't known yet.
+    if not net.name and t >= next_name_check then
         next_name_check = t + 1
         net.name = current_name()
     end
