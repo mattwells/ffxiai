@@ -61,6 +61,8 @@ Add an MCP server with the address `http://127.0.0.1:19750/mcp`. Apps call this 
 | `get_job_setup` | Blue magic set; automaton head, frame, attachments, skills and stats; or Monstrosity species |
 | `get_treasure_pool` | What's in the treasure pool, how long is left and the highest lot |
 | `get_nearby` | Monsters, players or NPCs nearby, nearest first, with HP, distance and who has claim |
+| `get_missions` | Mission progress in every storyline, from the nations to The Voracious Resurgence: current mission, finished or not, and every mission's status. The game sends this when you zone |
+| `get_quests` | Quest progress in every area (the nations, Jeuno, Other Areas, Outlands, Aht Urhgan, Crystal War, Abyssea, Adoulin, Coalition): counts, what's in progress, and each quest's status. Searchable by name. Also sent when you zone |
 | `lookup` | Game data from Windower's resources: item stats, spells, abilities, weapon skills, buffs, key items, job traits, zones. Can search item descriptions and limit results to what a character has |
 | `get_chat` | Recent chat, only if you [turn it on](#chat) |
 
@@ -95,3 +97,7 @@ If another program already uses port 19750, the addon says so once. Change `port
 ## Privacy
 
 The server only listens on `127.0.0.1`, so nothing else on your network can reach it. It rejects requests from web pages and from any address that isn't local.
+
+## Credits
+
+Mission names, quest titles and how to read the game's quest and mission log come from [Chronicle](https://github.com/jintawk/ffxi-chronicle) by Jintawk, a quest and mission tracker for Windower. `missions.lua` and `quests.lua` are copies of Chronicle's mission and quest name tables and keep its copyright notice.

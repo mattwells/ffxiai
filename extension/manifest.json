@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "ffxiai",
   "display_name": "FFXI-AI",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Let Claude see your Final Fantasy XI characters: gear, inventory, party, merits, currencies and more. Needs the FFXI-AI Windower addon.",
   "long_description": "Connects Claude to the **FFXI-AI** addon for Windower, so you can ask things like *\"What augments are on my cape?\"*, *\"Which of my rings have Store TP?\"* or *\"How many Sparks do I have?\"*.\n\n**Read-only.** Claude can look, never act: it can't move, fight, trade or send anything in game. Chat reading is off until you turn it on in game (`//ffxiai chat on`).\n\n**Before you start:** install the FFXI-AI addon in Windower and load it on every character (`//lua load ffxiai`). This extension only connects Claude to it.\n\nWorks with several characters at once: ask about one by name, or all of them.",
   "author": {
@@ -50,6 +50,8 @@
     {"name": "get_job_setup", "description": "Blue magic set, automaton parts or Monstrosity species"},
     {"name": "get_treasure_pool", "description": "What's in the treasure pool, time left and the highest lot"},
     {"name": "get_nearby", "description": "Monsters, players and NPCs nearby, with HP, distance and claim"},
+    {"name": "get_missions", "description": "Mission progress in every storyline, from the nations to The Voracious Resurgence"},
+    {"name": "get_quests", "description": "Quest progress in every area: what's done, in progress and not done"},
     {"name": "lookup", "description": "Game data from Windower: item stats, spells, abilities, weapon skills and more"}
   ],
   "compatibility": {

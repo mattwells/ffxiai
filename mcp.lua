@@ -168,6 +168,39 @@ local TOOLS = {
         }),
     },
     {
+        name = 'get_missions',
+        title = 'Missions',
+        description = 'Mission progress in every storyline (the nations, Zilart, Promathia, Aht Urhgan, Goddess, the three '
+            .. 'add-on scenarios, Adoulin, Rhapsodies and The Voracious Resurgence): the current mission, whether it is '
+            .. 'finished, and how many missions are done. With "storyline" it also lists every mission in it and whether '
+            .. 'each is done. The game sends this when the character zones, so it shows the last zone-in. A mission '
+            .. 'newer than FFXI-AI\'s table shows under "not_in_table" with where to look it up; look it up only if '
+            .. 'you need its name, never guess it.',
+        inputSchema = schema({
+            storyline = {type = 'string', description = 'Only this storyline, with its full mission list: a name or '
+                .. 'part of one (e.g. "Voracious", "Promathia", "Bastok") or a short name (tvr, rov, soa, cop, toau, '
+                .. 'wotg, zilart, acp, mkd, asa).'},
+        }),
+    },
+    {
+        name = 'get_quests',
+        title = 'Quests',
+        description = 'Quest progress by area (San d\'Oria, Bastok, Windurst, Jeuno, Other Areas, Outlands, Aht Urhgan, '
+            .. 'Crystal War, Abyssea, Adoulin, Coalition): how many are completed, in progress and not done, and which '
+            .. 'are in progress. With "area", "status" or "search" it lists the matching quests and each one\'s status '
+            .. '(completed, in progress, not done, or no longer available). The game sends this when the character '
+            .. 'zones, so it shows the last zone-in. Quests the game flags but FFXI-AI can\'t name show under '
+            .. '"not_in_table"; look them up only if you need them, never guess names.',
+        inputSchema = schema({
+            area = {type = 'string', description = 'Only this area, with its quest list: a name or part of one (e.g. '
+                .. '"Jeuno", "Crystal War", "Adoulin").'},
+            status = {type = 'string', enum = {'completed', 'in progress', 'not done', 'no longer available'},
+                description = 'Only quests with this status.'},
+            search = {type = 'string', description = 'Only quests whose name contains this text (case-insensitive), '
+                .. 'in every area unless "area" is given.'},
+        }),
+    },
+    {
         name = 'lookup',
         title = 'Look up game data',
         description = 'Searches Windower\'s game resources: items (stats as printed in game, level, jobs, slot, stack), '

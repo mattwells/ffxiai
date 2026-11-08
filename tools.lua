@@ -750,7 +750,8 @@ local function fields_of(p)
 end
 
 -- The game data FFXI-AI reads from packets, by the names players know, in the order //ffxiai shows them.
-tools.DATA_KINDS = {'Character stats', 'Skills', 'Buff timers', 'Merit points', 'Job points', 'Currencies', 'Currencies 2'}
+tools.DATA_KINDS = {'Character stats', 'Skills', 'Buff timers', 'Merit points', 'Job points', 'Currencies', 'Currencies 2',
+    'Quest and mission log'}
 
 local function kind_of(id, data)
     if id == 0x061 then return 'Character stats' end
@@ -827,6 +828,17 @@ function tools.record_packet(id, data, source)
         end
         return
     end
+    -- Quest and mission log (0x056): the game sends one packet per part (type in bytes 0x25-0x26) on zone-in.
+    -- Each part is kept as raw bytes and decoded by get_missions.
+    if id == 0x056 then
+        if type(data) ~= 'string' or #data < 0x26 then return end
+        local part = data:byte(0x25) + data:byte(0x26) * 0x100
+        local t = source and KEPT or clock()
+        seen.mission_log = seen.mission_log or {}
+        seen.mission_log[part] = {time = t, data = data}
+        note_packet('Quest and mission log', t)
+        return
+    end
     if (id == 0x0D2 or id == 0x0D3) and not source then
         if not packets_ok then return end
         local ok, p = pcall(packets.parse, 'incoming', data)
@@ -883,7 +895,7 @@ end
 function tools.seed_packets()
     local last = windower.packets and windower.packets.last_incoming
     if not last then return end
-    for _, id in ipairs({0x037, 0x044, 0x061, 0x062, 0x063, 0x113, 0x118}) do
+    for _, id in ipairs({0x037, 0x044, 0x056, 0x061, 0x062, 0x063, 0x113, 0x118}) do
         local ok, data = pcall(last, id)
         if ok and data then
             tools.record_packet(id, data, 'kept by Windower')
@@ -1319,6 +1331,453 @@ function tools.get_currencies(args)
     end
 end
 
+-- Missions ------------------------------------------------------------------------------
+
+local missions_ok, mission_names = pcall(require, 'missions')
+if not missions_ok or type(mission_names) ~= 'table' then mission_names = {} end
+
+-- Parts of the mission log packet (0x056) that get_missions reads.
+local LOG_CURRENT, LOG_TVR, LOG_TOAU_WOTG = 0xFFFF, 0xFFFE, 0x0080
+local LOG_DONE_NATIONS, LOG_DONE_TOAU_WOTG = 0x00D0, 0x00D8
+
+-- Storylines in story order. 'flags' storylines have a completed list (one bit per mission id, at byte
+-- 'done_at' of part 'done'); 'linear' ones only send the current mission, so everything before it is done.
+-- 'value' reads the current mission from the packet parts. 'final' is a last mission that stays current
+-- for good once reached, so reaching it means finished. 'hidden' ids are internal steps, not missions.
+-- Decoding rules follow Chronicle's notes (see missions.lua).
+local NATION_KEYS = {[0] = 'sandoria', [1] = 'bastok', [2] = 'windurst'}
+
+local function u8(data, pos) return data:byte(pos) end
+
+local NATION_HIDDEN = {[6] = true, [7] = true, [8] = true, [9] = true} -- alternate destinations of mission 5
+
+local MISSION_LINES = {
+    {key = 'sandoria', name = "San d'Oria", kind = 'flags', done = LOG_DONE_NATIONS, done_at = 5, hidden = NATION_HIDDEN},
+    {key = 'bastok', name = 'Bastok', kind = 'flags', done = LOG_DONE_NATIONS, done_at = 13, hidden = NATION_HIDDEN},
+    {key = 'windurst', name = 'Windurst', kind = 'flags', done = LOG_DONE_NATIONS, done_at = 21, hidden = NATION_HIDDEN},
+    {key = 'zilart', name = 'Rise of the Zilart', kind = 'flags', done = LOG_DONE_NATIONS, done_at = 29,
+        value = function(p) return p[LOG_CURRENT] and u32(p[LOG_CURRENT], 13) end,
+        hidden = {[2] = true}},
+    {key = 'cop', name = 'Chains of Promathia', kind = 'linear', final = 850,
+        value = function(p) return p[LOG_CURRENT] and u32(p[LOG_CURRENT], 17) end,
+        hidden = {[101] = true, [137] = true, [257] = true, [330] = true, [331] = true, [335] = true, [339] = true,
+            [340] = true, [341] = true, [345] = true, [349] = true, [367] = true, [447] = true, [540] = true,
+            [542] = true, [543] = true, [546] = true, [549] = true, [550] = true, [552] = true, [553] = true,
+            [556] = true, [559] = true, [560] = true, [562] = true, [564] = true, [577] = true, [647] = true,
+            [758] = true}},
+    {key = 'toau', name = 'Treasures of Aht Urhgan', kind = 'flags', done = LOG_DONE_TOAU_WOTG, done_at = 5, final = 47,
+        value = function(p) return p[LOG_TOAU_WOTG] and u32(p[LOG_TOAU_WOTG], 25) end},
+    {key = 'wotg', name = 'Wings of the Goddess', kind = 'flags', done = LOG_DONE_TOAU_WOTG, done_at = 13,
+        value = function(p) return p[LOG_TOAU_WOTG] and u32(p[LOG_TOAU_WOTG], 29) end,
+        hidden = {[53] = true}},
+    {key = 'acp', name = 'A Crystalline Prophecy', kind = 'linear', final = 11,
+        value = function(p) return p[LOG_CURRENT] and u8(p[LOG_CURRENT], 25) % 16 end},
+    {key = 'mkd', name = "A Moogle Kupo d'Etat", kind = 'linear', final = 14,
+        value = function(p) return p[LOG_CURRENT] and math.floor(u8(p[LOG_CURRENT], 25) / 16) end},
+    {key = 'asa', name = 'A Shantotto Ascension', kind = 'linear', final = 14,
+        value = function(p) return p[LOG_CURRENT] and u8(p[LOG_CURRENT], 26) % 16 end},
+    {key = 'soa', name = 'Seekers of Adoulin', kind = 'linear', final = 368, hidden = {[999] = true},
+        value = function(p) return p[LOG_CURRENT] and u32(p[LOG_CURRENT], 29) end},
+    {key = 'rov', name = "Rhapsodies of Vana'diel", kind = 'linear', final = 334,
+        value = function(p) return p[LOG_CURRENT] and u32(p[LOG_CURRENT], 33) end},
+    -- TVR is the only storyline still getting new missions, so only it checks for one newer than the table.
+    {key = 'tvr', name = 'The Voracious Resurgence', kind = 'linear', final = 642, between_flag = true, newer_margin = 4,
+        value = function(p) return p[LOG_TVR] and u32(p[LOG_TVR], 5) end},
+}
+
+-- A linear storyline's value can sit a little above its mission's id: Chronicle saw 454 for TVR mission 452,
+-- and finished Adoulin and Rhapsodies send 374 and 340 for their last missions (368, 334). Finished TVR sends
+-- exactly 642. A TVR value more than newer_margin above its last mission is probably a newer mission.
+local NONE = 0xFFFF -- "no current mission" in the 32-bit fields
+
+-- Mission ids of a storyline in story order, without hidden steps.
+local function line_ids(line)
+    local ids = {}
+    for id in pairs(mission_names[line.key] or {}) do
+        if not (line.hidden and line.hidden[id]) then ids[#ids + 1] = id end
+    end
+    table.sort(ids)
+    return ids
+end
+
+local function bit_set(data, from, id)
+    local b = data and data:byte(from + math.floor(id / 8))
+    return b ~= nil and math.floor(b / 2 ^ (id % 8)) % 2 == 1
+end
+
+local function lookup_hint(line, after)
+    return 'Not in FFXI-AI\'s mission table, probably newer than it. Only if you need the name, look it up on '
+        .. 'BG-Wiki (the ' .. line.name .. ' missions page' .. (after and (', the mission after "' .. after .. '"') or '')
+        .. '); don\'t guess it.'
+end
+
+local function mission_name(line, id)
+    return (mission_names[line.key] or {})[id]
+end
+
+-- One storyline's state: {status, current, completed, total, missions (with list), ...}.
+local function decode_line(line, parts, nation, with_list)
+    local ids = line_ids(line)
+    local out = {storyline = line.name}
+    local status_of = {} -- id -> 'completed' | 'current' | 'next'
+    local unknown
+    if line.kind == 'flags' then
+        local done = parts[line.done] and parts[line.done].data
+        local current
+        if NATION_KEYS[nation] == line.key and parts[LOG_CURRENT] then
+            current = u32(parts[LOG_CURRENT].data, 9)
+        elseif line.value then
+            local p = {}
+            for k, v in pairs(parts) do p[k] = v.data end
+            current = line.value(p)
+        end
+        if not done and current == nil then return nil end
+        -- No mission, or a hidden placeholder (e.g. Goddess's "Lest We Forget" once it's finished).
+        -- (The nations' hidden 6-9 are real missions you can be on, just folded into 5 in lists.)
+        if current and (current >= NONE
+            or (line.hidden and line.hidden ~= NATION_HIDDEN and line.hidden[current])) then current = false end
+        for _, id in ipairs(ids) do
+            if done and bit_set(done, line.done_at, id) then status_of[id] = 'completed' end
+        end
+        if line.hidden == NATION_HIDDEN and done then
+            -- Mission 5 counts as done when any of its alternate destinations (6-9) is.
+            for sub = 6, 9 do
+                if bit_set(done, line.done_at, sub) then status_of[5] = 'completed' end
+            end
+        end
+        if line.key == 'zilart' then
+            -- The Last Verse (31) completes with Chains of Promathia's end.
+            local cop = parts[LOG_CURRENT] and u32(parts[LOG_CURRENT].data, 17)
+            if cop and cop >= 850 and cop < NONE then status_of[31] = 'completed' end
+        end
+        if current then
+            if line.final == current then
+                status_of[current] = 'completed'
+            elseif status_of[current] ~= 'completed' then
+                status_of[current] = 'current'
+            end
+            if not mission_name(line, current) then
+                unknown = {current_id = current, note = lookup_hint(line)}
+            end
+        end
+        -- Completed flags for ids the table doesn't have.
+        if done then
+            local extra = {}
+            local names = mission_names[line.key] or {}
+            for id = 0, 63 do
+                if bit_set(done, line.done_at, id) and names[id] == nil and not (line.hidden and line.hidden[id]) then
+                    extra[#extra + 1] = id
+                end
+            end
+            if #extra > 0 then
+                unknown = unknown or {}
+                unknown.completed_ids = extra
+                unknown.note = lookup_hint(line)
+            end
+        end
+        out.current = current and status_of[current] == 'current' and (mission_name(line, current) or ('mission id ' .. current)) or nil
+    else
+        local p = {}
+        for k, v in pairs(parts) do p[k] = v.data end
+        local raw = line.value(p)
+        if raw == nil then return nil end
+        out.raw = raw
+        local value, between = raw, false
+        if line.between_flag and raw >= 0x80000000 then
+            -- TVR only: top bit set means no mission in progress; the rest points at the next one.
+            value, between = raw - 0x80000000, true
+        end
+        local active
+        for i = #ids, 1, -1 do
+            if ids[i] <= value then active = ids[i]; break end
+        end
+        if value == 0 or not active then
+            out.status = 'not started'
+        else
+            local last = ids[#ids]
+            for _, id in ipairs(ids) do
+                if id < active then status_of[id] = 'completed' end
+            end
+            if active == last and line.newer_margin and value - last > line.newer_margin then
+                status_of[active] = 'completed'
+                unknown = {after = mission_name(line, last), note = lookup_hint(line, mission_name(line, last))}
+                out.status = 'on a mission newer than FFXI-AI\'s table'
+            elseif between then
+                status_of[active] = 'next'
+                out.status = 'between missions'
+                out.next = mission_name(line, active)
+            elseif line.final == active then
+                status_of[active] = 'completed'
+                out.status = 'finished'
+            else
+                status_of[active] = 'current'
+                out.current = mission_name(line, active)
+            end
+        end
+    end
+    local completed = 0
+    for _, id in ipairs(ids) do
+        if status_of[id] == 'completed' then completed = completed + 1 end
+    end
+    out.completed = completed
+    out.total = #ids
+    if not out.status then
+        if out.current then
+            out.status = 'in progress'
+        elseif completed == #ids and #ids > 0 then
+            out.status = 'finished'
+        elseif completed > 0 then
+            out.status = 'between missions'
+        else
+            out.status = 'not started'
+        end
+    end
+    out.not_in_table = unknown
+    if with_list then
+        local list = json.array()
+        for _, id in ipairs(ids) do
+            list[#list + 1] = {name = mission_name(line, id), status = status_of[id] or 'not done'}
+        end
+        out.missions = list
+    end
+    return out
+end
+
+local function find_line(text)
+    text = text:lower():gsub("[^%w']", '')
+    for _, line in ipairs(MISSION_LINES) do
+        local name = line.name:lower():gsub("[^%w']", '')
+        if line.key == text or name:find(text, 1, true) then return line end
+    end
+end
+
+local LOG_PART_NAMES = {[LOG_CURRENT] = 'current missions', [LOG_TVR] = 'Voracious Resurgence',
+    [LOG_TOAU_WOTG] = 'Aht Urhgan and Goddess current', [LOG_DONE_NATIONS] = 'nation and Zilart completed',
+    [LOG_DONE_TOAU_WOTG] = 'Aht Urhgan and Goddess completed'}
+
+function tools.get_missions(args)
+    local _, err = player_or_err()
+    if _ == nil then return nil, err end
+    local parts = seen.mission_log or {}
+    local only
+    if type(args.storyline) == 'string' and args.storyline ~= '' then
+        only = find_line(args.storyline)
+        if not only then
+            local names = {}
+            for _, line in ipairs(MISSION_LINES) do names[#names + 1] = line.name end
+            return nil, 'no storyline matches "' .. args.storyline .. '". Storylines: ' .. table.concat(names, ', ')
+        end
+    end
+    local nation = parts[LOG_CURRENT] and u32(parts[LOG_CURRENT].data, 5)
+    local out = {nation = ({[0] = "San d'Oria", [1] = 'Bastok', [2] = 'Windurst'})[nation]}
+    local list = json.array()
+    for _, line in ipairs(MISSION_LINES) do
+        if not only or only == line then
+            local d = decode_line(line, parts, nation, only ~= nil)
+            if d then
+                -- Leave out the other nations' storylines unless something in them is done.
+                if not (NATION_KEYS[0] == line.key or NATION_KEYS[1] == line.key or NATION_KEYS[2] == line.key)
+                    or NATION_KEYS[nation] == line.key or d.completed > 0 or only then
+                    list[#list + 1] = d
+                end
+            end
+        end
+    end
+    out.storylines = list
+    local received, missing = json.object(), {}
+    for part, label in pairs(LOG_PART_NAMES) do
+        if parts[part] then
+            received[label] = parts[part].time == KEPT and 'before FFXI-AI was last loaded' or age_text(parts[part].time)
+        else
+            missing[#missing + 1] = label
+        end
+    end
+    out.received = received
+    if #missing > 0 then
+        table.sort(missing)
+        out.not_received = missing
+        out.note = 'The game sends the mission log when the character zones. Zone once (any zone line, warp or '
+            .. 'teleport) with FFXI-AI loaded to fill in the rest.'
+    end
+    return out
+end
+
+-- Quests -------------------------------------------------------------------------------
+
+local quests_ok, quest_names = pcall(require, 'quests')
+if not quests_ok or type(quest_names) ~= 'table' then quest_names = {} end
+
+-- Quest areas as the game's quest log groups them: the 0x056 part with the "current" bits and the one with
+-- the "completed" bits (one bit per quest id, from byte 5). Special cases follow Chronicle's notes:
+-- 'hidden' ids are placeholders in the game data, 'gone' quests can no longer be done (shown only if done),
+-- 'either' folds quests where only one of a group can be done into the first one, and 'final' quests stay
+-- current for good once reached, so current there means done.
+local QUEST_AREAS = {
+    {key = 'sandoria', name = "San d'Oria", current = 0x0050, done = 0x0090, either = {[75] = {76}}},
+    {key = 'bastok', name = 'Bastok', current = 0x0058, done = 0x0098},
+    {key = 'windurst', name = 'Windurst', current = 0x0060, done = 0x00A0,
+        hidden = {[22] = true, [54] = true, [55] = true, [56] = true, [57] = true, [58] = true, [59] = true, [99] = true}},
+    -- 180-185 (Jeuno) and 106, 107, 112, 113 (Adoulin) get set inside quest chains but have no entry at all in
+    -- the game's quest name DATs (0xD99D, 0xD9BB; checked 2026-11-08), so they are progress flags, not quests.
+    {key = 'jeuno', name = 'Jeuno', current = 0x0068, done = 0x00A8,
+        hidden = {[122] = true, [125] = true, [126] = true, [127] = true,
+            [180] = true, [181] = true, [182] = true, [183] = true, [184] = true, [185] = true},
+        gone = {[33] = true, [34] = true, [35] = true, [36] = true, [37] = true, [38] = true, [39] = true, [40] = true}},
+    -- Mog Garden quests (1039-1049) are listed here but tracked in Adoulin's bits, at id - 1000.
+    {key = 'other', name = 'Other Areas', current = 0x0070, done = 0x00B0, either = {[24] = {10}},
+        elsewhere = {from = 1000, current = 0x00F0, done = 0x00F8}},
+    {key = 'outlands', name = 'Outlands', current = 0x0078, done = 0x00B8, gone = {[128] = true}},
+    -- Aht Urhgan's quest bits are the first 16 bytes of parts that also carry mission data.
+    {key = 'toau', name = 'Aht Urhgan', current = 0x0080, done = 0x00C0, bits = 128},
+    -- Crystal War's bits past 127 are dense and unrelated to the table (its quests stop at 98), so they look
+    -- like other data; only the first 128 are read for quests the table doesn't name.
+    {key = 'wotg', name = 'Crystal War', current = 0x0088, done = 0x00C8, either = {[69] = {70, 71}},
+        gone = {[31] = true}, final = {[98] = true}, bits = 128},
+    {key = 'abyssea', name = 'Abyssea', current = 0x00E0, done = 0x00E8, final = {[186] = true}},
+    {key = 'adoulin', name = 'Adoulin', current = 0x00F0, done = 0x00F8,
+        hidden = {[106] = true, [107] = true, [112] = true, [113] = true}},
+    {key = 'coalition', name = 'Coalition', current = 0x0100, done = 0x0108, hidden = {[47] = true},
+        gone = {[16] = true, [17] = true, [18] = true, [19] = true, [20] = true}},
+}
+
+local QUEST_STATUSES = {completed = true, ['in progress'] = true, ['not done'] = true, ['no longer available'] = true}
+
+-- Every quest in an area with its status, in id order, plus ids with bits set that the table doesn't have.
+local function decode_quest_area(area, parts)
+    local cur = parts[area.current] and parts[area.current].data
+    local done = parts[area.done] and parts[area.done].data
+    if not cur and not done then return nil end
+    local names = quest_names[area.key] or {}
+    local folded = {}
+    for _, others in pairs(area.either or {}) do
+        for _, o in ipairs(others) do folded[o] = true end
+    end
+    local function flags(id)
+        local c, d = cur, done
+        local bit_id = id
+        if area.elsewhere and id >= area.elsewhere.from then
+            c = parts[area.elsewhere.current] and parts[area.elsewhere.current].data
+            d = parts[area.elsewhere.done] and parts[area.elsewhere.done].data
+            bit_id = id - area.elsewhere.from
+        end
+        return bit_set(d, 5, bit_id), bit_set(c, 5, bit_id)
+    end
+    local ids = {}
+    for id in pairs(names) do
+        if not (area.hidden and area.hidden[id]) and not folded[id] then ids[#ids + 1] = id end
+    end
+    table.sort(ids)
+    local list = {}
+    for _, id in ipairs(ids) do
+        local is_done, is_current = flags(id)
+        for _, o in ipairs((area.either or {})[id] or {}) do
+            local od, oc = flags(o)
+            is_done, is_current = is_done or od, is_current or oc
+        end
+        local status
+        if is_done or (is_current and area.final and area.final[id]) then
+            status = 'completed' -- (current bits stay set after a quest is done, so done wins)
+        elseif area.gone and area.gone[id] then
+            status = 'no longer available'
+        elseif is_current then
+            status = 'in progress'
+        else
+            status = 'not done'
+        end
+        list[#list + 1] = {name = names[id], status = status}
+    end
+    -- Bits another area reads as its own quests (Other Areas' Mog Garden quests in Adoulin's bits).
+    local lent = {}
+    for _, other in ipairs(QUEST_AREAS) do
+        local e = other.elsewhere
+        if e and e.done == area.done then
+            for id in pairs(quest_names[other.key] or {}) do
+                if id >= e.from then lent[id - e.from] = true end
+            end
+        end
+    end
+    local unknown = {}
+    for id = 0, (area.bits or 256) - 1 do
+        if names[id] == nil and not lent[id] and not (area.hidden and area.hidden[id])
+            and (bit_set(done, 5, id) or bit_set(cur, 5, id)) then
+            unknown[#unknown + 1] = id
+        end
+    end
+    return list, unknown
+end
+
+local function find_quest_area(text)
+    local t = text:lower():gsub("[^%w']", '')
+    for _, area in ipairs(QUEST_AREAS) do
+        local name = area.name:lower():gsub("[^%w']", '')
+        if area.key == t or name:find(t, 1, true) then return area end
+    end
+end
+
+function tools.get_quests(args)
+    local _, err = player_or_err()
+    if _ == nil then return nil, err end
+    local parts = seen.mission_log or {}
+    local only
+    if type(args.area) == 'string' and args.area ~= '' then
+        only = find_quest_area(args.area)
+        if not only then
+            local names = {}
+            for _, area in ipairs(QUEST_AREAS) do names[#names + 1] = area.name end
+            return nil, 'no quest area matches "' .. args.area .. '". Areas: ' .. table.concat(names, ', ')
+        end
+    end
+    local want = type(args.status) == 'string' and args.status ~= '' and args.status:lower() or nil
+    if want and not QUEST_STATUSES[want] then
+        return nil, 'status must be one of: completed, in progress, not done, no longer available'
+    end
+    local search = type(args.search) == 'string' and args.search ~= '' and args.search:lower() or nil
+    local show_list = only or want or search
+    local out = {areas = json.array()}
+    local missing = {}
+    for _, area in ipairs(QUEST_AREAS) do
+        if not only or only == area then
+            local list, unknown = decode_quest_area(area, parts)
+            if not list then
+                missing[#missing + 1] = area.name
+            else
+                local counts = {completed = 0, ['in progress'] = 0, ['not done'] = 0, ['no longer available'] = 0}
+                local in_progress, shown = json.array(), json.array()
+                for _, q in ipairs(list) do
+                    counts[q.status] = counts[q.status] + 1
+                    if q.status == 'in progress' then in_progress[#in_progress + 1] = q.name end
+                    if show_list and (not want or q.status == want)
+                        and (not search or q.name:lower():find(search, 1, true)) then
+                        shown[#shown + 1] = q
+                    end
+                end
+                local entry = {area = area.name, completed = counts.completed, in_progress = counts['in progress'],
+                    not_done = counts['not done'], total = #list - counts['no longer available']}
+                if show_list then
+                    entry.quests = shown
+                else
+                    entry.in_progress_quests = in_progress
+                end
+                if #unknown > 0 then
+                    entry.not_in_table = {ids = unknown, note = 'Flags the game set that FFXI-AI\'s table doesn\'t name: '
+                        .. 'quests newer than the table, or progress flags inside a quest chain that have no name at all. '
+                        .. 'Only if you need them, look them up on BG-Wiki (' .. area.name .. ' quests); don\'t guess names.'}
+                end
+                -- With a search, leave out areas with no matches.
+                if not search or #shown > 0 then out.areas[#out.areas + 1] = entry end
+            end
+        end
+    end
+    if #missing > 0 then
+        out.not_received = missing
+        out.note = 'The game sends the quest log when the character zones. Zone once (any zone line, warp or '
+            .. 'teleport) with FFXI-AI loaded to fill in the rest.'
+    end
+    out.counting = '"total" leaves out quests that can no longer be done. A quest the game still lists as current '
+        .. 'after it was done counts as completed.'
+    return out
+end
+
 function tools.get_equipment()
     local _, err = player_or_err()
     if _ == nil then return nil, err end
@@ -1463,6 +1922,8 @@ local handlers = {
     get_job_setup = tools.get_job_setup,
     get_treasure_pool = tools.get_treasure_pool,
     get_nearby = tools.get_nearby,
+    get_missions = tools.get_missions,
+    get_quests = tools.get_quests,
 }
 
 function tools.run(name, args)
