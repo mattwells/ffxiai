@@ -281,6 +281,52 @@ local function name_matcher(search, whole_word)
     return function(s) return s:find(pattern) ~= nil end
 end
 
+-- Storage slips: which item each bit of a slip stands for comes from Windower's res.slips, and the
+-- slip's extdata has one bit set per item stored on it. Nothing here needs updating when slips change.
+local slip_info
+
+local function load_slip_info()
+    local by_item = {}
+    local ok, list = pcall(function() return res.slips end)
+    if ok and type(list) == 'table' then
+        for _, s in pairs(list) do
+            if type(s) == 'table' and rawget(s, 'item_id') and type(rawget(s, 'items')) == 'table' then
+                by_item[s.item_id] = {name = rawget(s, 'en') or ('Storage Slip ' .. s.id), number = s.id, items = s.items}
+            end
+        end
+    end
+    return by_item
+end
+
+-- Every slip the character carries: {name, bag, ids}, sorted by slip number, with ids in slip order.
+local function stored_on_slips(items)
+    slip_info = slip_info or load_slip_info()
+    local out = {}
+    for id = 0, 17 do
+        local bag = res.bags[id]
+        for item in bag_items(bag and items[bag.api]) do
+            local slip = slip_info[item.id]
+            if slip and type(item.extdata) == 'string' then
+                local ids = {}
+                for i = 1, #item.extdata do
+                    local byte = item.extdata:byte(i)
+                    for b = 0, 7 do
+                        if math.floor(byte / 2 ^ b) % 2 == 1 then
+                            local stored = slip.items[(i - 1) * 8 + b + 1]
+                            if stored and stored ~= 0 then
+                                ids[#ids + 1] = stored
+                            end
+                        end
+                    end
+                end
+                out[#out + 1] = {name = slip.name, number = slip.number, bag = bag.en, ids = ids}
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.number < b.number end)
+    return out
+end
+
 function tools.get_inventory(args)
     local _, err = player_or_err()
     if _ == nil then return nil, err end
@@ -288,9 +334,11 @@ function tools.get_inventory(args)
     local whole_word = args.whole_word == true
     local matches = search and name_matcher(search, whole_word)
     local which = type(args.bag) == 'string' and args.bag or (search and 'all' or 'inventory')
-    local bags = bag_list(which)
-    if #bags == 0 then
-        return nil, 'unknown bag "' .. which .. '". Bags: all, ' .. bag_names()
+    local norm = which:lower():gsub('[%s_]', '')
+    local want_slips = norm == 'all' or norm == 'slips'
+    local bags = norm == 'slips' and {} or bag_list(which)
+    if #bags == 0 and not want_slips then
+        return nil, 'unknown bag "' .. which .. '". Bags: all, slips, ' .. bag_names()
     end
     local items = windower.ffxi.get_items()
     if not items then
@@ -333,6 +381,27 @@ function tools.get_inventory(args)
                     used = contents.count,
                     max = contents.max,
                     items = json.array(order),
+                }
+            end
+        end
+    end
+    if want_slips then
+        for _, slip in ipairs(stored_on_slips(items)) do
+            local list = json.array()
+            for _, sid in ipairs(slip.ids) do
+                local r = res.items[sid]
+                local name = r and r.en or ('item ' .. sid)
+                local long = r and r.enl or name
+                if not search or matches(name:lower()) or matches(long:lower()) then
+                    list[#list + 1] = {name = name, count = 1, id = sid}
+                end
+            end
+            if not search or #list > 0 then
+                out.bags[#out.bags + 1] = {
+                    bag = slip.name,
+                    slip_kept_in = slip.bag,
+                    used = #slip.ids,
+                    items = list,
                 }
             end
         end
@@ -511,6 +580,17 @@ function owned_of.item()
                 h.order[#h.order + 1] = bag.en
             end
             h.counts[bag.en] = h.counts[bag.en] + (item.count or 1)
+        end
+    end
+    for _, slip in ipairs(stored_on_slips(items)) do
+        for _, sid in ipairs(slip.ids) do
+            have[sid] = have[sid] or {counts = {}, order = {}}
+            local h = have[sid]
+            if not h.counts[slip.name] then
+                h.counts[slip.name] = 0
+                h.order[#h.order + 1] = slip.name
+            end
+            h.counts[slip.name] = h.counts[slip.name] + 1
         end
     end
     local out = {}

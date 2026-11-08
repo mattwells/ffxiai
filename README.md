@@ -50,7 +50,7 @@ Add an MCP server with the address `http://127.0.0.1:19750/mcp`. Apps call this 
 | `get_player` | Jobs and levels, HP/MP/TP, status, buffs and debuffs with time left, every job's level |
 | `get_target` | Target, sub-target, battle target and pet: HP %, distance, who has claim |
 | `get_party` | Party and alliance: HP/MP, TP, zone, distance, leader |
-| `get_inventory` | A bag's items, counts and augments, plus gil. Can search every bag, optionally by whole word |
+| `get_inventory` | A bag's items, counts and augments, plus gil. Can search every bag and storage slip, optionally by whole word |
 | `get_equipment` | What's in each slot, which bag it's from, augments, path and rank |
 | `get_recasts` | Abilities and spells on cooldown |
 | `get_location` | Zone, position, weather, Vana'diel time and day, moon, server |

@@ -68,9 +68,10 @@ local TOOLS = {
         description = 'Items in a bag, with counts, plus gil. Without "bag" it reads the main inventory, or every bag when "search" is given. '
             .. 'Copies of an item are listed together only when they are identical: equipped copies and copies with different '
             .. 'augments get their own entries, and weapons and armour show their augments (and path and rank, for items that have them). '
-            .. 'Bags: inventory, safe, safe2, storage, locker, satchel, sack, case, wardrobe, wardrobe2 to wardrobe8, temporary, recycle, or all.',
+            .. 'Bags: inventory, safe, safe2, storage, locker, satchel, sack, case, wardrobe, wardrobe2 to wardrobe8, temporary, recycle, '
+            .. 'slips (items stored on the storage slips the character carries; slips record which items, not augments), or all (includes slips).',
         inputSchema = schema({
-            bag = {type = 'string', description = 'Bag to read, or "all".'},
+            bag = {type = 'string', description = 'Bag to read, "slips", or "all".'},
             search = {type = 'string', description = 'Only items whose name contains this text (case-insensitive).'},
             whole_word = {type = 'boolean', description = 'With "search": match whole words only, so "ring" finds rings but not earrings.'},
         }),
@@ -173,7 +174,7 @@ local TOOLS = {
             .. 'spells (MP, cast and recast times, element, level per job), job abilities, weapon skills (skillchain '
             .. 'properties), buffs, key items, job traits and zones. Search by name, id, or for items by the text of the '
             .. 'item\'s description (e.g. "store tp"). With "owned": true it only returns what the character has: items '
-            .. 'in their bags (with where and how many), key items held, spells learned, or abilities and weapon skills '
+            .. 'in their bags or on their storage slips (with where and how many), key items held, spells learned, or abilities and weapon skills '
             .. 'usable on their current jobs. Item descriptions show base stats only, not augments, path or rank. '
             .. '"character" is only needed with "owned".',
         inputSchema = schema({
